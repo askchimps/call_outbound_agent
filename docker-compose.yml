@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  outbound-caller:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.local
+    environment:
+      - SSL_CERT_FILE=/usr/local/lib/python3.13/site-packages/certifi/cacert.pem
+      - REQUESTS_CA_BUNDLE=/usr/local/lib/python3.13/site-packages/certifi/cacert.pem
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
