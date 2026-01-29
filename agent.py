@@ -22,7 +22,7 @@ from livekit.agents import (
 from livekit.plugins import (
     deepgram,
     openai,
-    cartesia,
+    elevenlabs,
     silero,
     noise_cancellation,  # noqa: F401
 )
@@ -181,16 +181,16 @@ async def entrypoint(ctx: JobContext):
         dial_info=dial_info,
     )
 
-    # the following uses GPT-4o, Deepgram and Cartesia
+    # the following uses GPT-4o, Deepgram and ElevenLabs
     session = AgentSession(
         turn_detection=EnglishModel(),
         vad=silero.VAD.load(),
         stt=deepgram.STT(),
-        # you can also use OpenAI's TTS with openai.TTS()
-        tts=cartesia.TTS(),
-        llm=openai.LLM(model="gpt-4o"),
-        # you can also use a speech-to-speech model like OpenAI's Realtime API
-        # llm=openai.realtime.RealtimeModel()
+        tts=elevenlabs.TTS(
+            voice_id=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+            model=os.getenv("TTS_MODEL_ID", "eleven_flash_v2_5"),
+        ),
+        llm=openai.LLM(model=os.getenv("LLM_MODEL", "gpt-4o")),
     )
 
     # start the session first before dialing, to ensure that when the user picks up
