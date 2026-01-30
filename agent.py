@@ -139,7 +139,20 @@ async def entrypoint(ctx: JobContext):
     # create a new agent instance (fresh history for each call)
     agent = OutboundCaller()
 
-    # the following uses GPT-4o, Deepgram and ElevenLabs
+    # Configure LLM - supports custom vLLM endpoint via LLM_BASE_URL
+    llm_base_url = os.getenv("LLM_BASE_URL")
+    llm_model = os.getenv("LLM_MODEL", "gpt-4o")
+
+    if llm_base_url:
+        # Custom LLM (e.g., vLLM on vast.ai)
+        llm = openai.LLM(
+            model=llm_model,
+            base_url=llm_base_url,
+        )
+    else:
+        # Default to OpenAI
+        llm = openai.LLM(model=llm_model)
+
     session = AgentSession(
         turn_detection=EnglishModel(),
         vad=silero.VAD.load(),
@@ -148,7 +161,7 @@ async def entrypoint(ctx: JobContext):
             voice_id=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
             model=os.getenv("TTS_MODEL_ID", "eleven_flash_v2_5"),
         ),
-        llm=openai.LLM(model=os.getenv("LLM_MODEL", "gpt-4o")),
+        llm=llm,
     )
 
     # start the session first before dialing, to ensure that when the user picks up
