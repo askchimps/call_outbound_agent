@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY agent.py .
 COPY server.py .
+COPY baseprompt.txt .
 
 # Download required model files
 RUN python agent.py download-files
