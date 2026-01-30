@@ -43,9 +43,9 @@ def perf_log(service: str, message: str, duration_ms: float = None):
     """Log performance metrics with timestamp"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     if duration_ms is not None:
-        logger.info(f"[PERF_LOG - {timestamp}] [{service}] {message} - {duration_ms:.2f}ms")
+        print(f"[PERF_LOG - {timestamp}] [{service}] {message} - {duration_ms:.2f}ms", flush=True)
     else:
-        logger.info(f"[PERF_LOG - {timestamp}] [{service}] {message}")
+        print(f"[PERF_LOG - {timestamp}] [{service}] {message}", flush=True)
 
 outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
 
