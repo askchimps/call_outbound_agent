@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 from dotenv import load_dotenv
 import json
 import os
 import time
 from datetime import datetime
-from typing import Any, AsyncIterable
+from typing import AsyncIterable
 
 from livekit import rtc, api
 from livekit.agents import (
     AgentSession,
     Agent,
     JobContext,
-    function_tool,
-    RunContext,
-    get_job_context,
     cli,
     WorkerOptions,
     RoomInputOptions,
@@ -35,8 +31,6 @@ from livekit.plugins.turn_detector.english import EnglishModel
 
 # load environment variables, this is optional, only used for local development
 load_dotenv(dotenv_path=".env.local")
-logger = logging.getLogger("outbound-caller")
-logger.setLevel(logging.INFO)
 
 
 def perf_log(service: str, message: str, duration_ms: float = None):
@@ -62,28 +56,6 @@ class OutboundCaller(Agent):
 
     def set_participant(self, participant: rtc.RemoteParticipant):
         self.participant = participant
-
-    async def hangup(self):
-        """Helper function to hang up the call by deleting the room"""
-
-        job_ctx = get_job_context()
-        await job_ctx.api.room.delete_room(
-            api.DeleteRoomRequest(
-                room=job_ctx.room.name,
-            )
-        )
-
-    @function_tool()
-    async def end_call(self, ctx: RunContext):
-        """Called when the user wants to end the call"""
-        logger.info(f"ending the call for {self.participant.identity}")
-
-        # let the agent finish speaking
-        current_speech = ctx.session.current_speech
-        if current_speech:
-            await current_speech.wait_for_playout()
-
-        await self.hangup()
 
     async def transcription_node(
         self, text: AsyncIterable[str], model_settings: ModelSettings
@@ -140,7 +112,7 @@ class OutboundCaller(Agent):
 
 
 async def entrypoint(ctx: JobContext):
-    logger.info(f"connecting to room {ctx.room.name}")
+    print(f"[INFO] connecting to room {ctx.room.name}", flush=True)
     await ctx.connect()
 
     # when dispatching the agent, we'll pass it the phone number to dial
@@ -300,15 +272,16 @@ async def entrypoint(ctx: JobContext):
         # wait for the agent session start and participant join
         await session_started
         participant = await ctx.wait_for_participant(identity=participant_identity)
-        logger.info(f"participant joined: {participant.identity}")
+        print(f"[INFO] participant joined: {participant.identity}", flush=True)
 
         agent.set_participant(participant)
 
     except api.TwirpError as e:
-        logger.error(
-            f"error creating SIP participant: {e.message}, "
+        print(
+            f"[ERROR] error creating SIP participant: {e.message}, "
             f"SIP status: {e.metadata.get('sip_status_code')} "
-            f"{e.metadata.get('sip_status')}"
+            f"{e.metadata.get('sip_status')}",
+            flush=True
         )
         ctx.shutdown()
 
