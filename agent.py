@@ -6,6 +6,8 @@ import re
 from dotenv import load_dotenv
 import json
 import os
+import time
+from datetime import datetime
 from typing import Any, AsyncIterable
 
 from livekit import rtc, api
@@ -35,6 +37,15 @@ from livekit.plugins.turn_detector.english import EnglishModel
 load_dotenv(dotenv_path=".env.local")
 logger = logging.getLogger("outbound-caller")
 logger.setLevel(logging.INFO)
+
+
+def perf_log(service: str, message: str, duration_ms: float = None):
+    """Log performance metrics with timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    if duration_ms is not None:
+        logger.info(f"[PERF_LOG - {timestamp}] [{service}] {message} - {duration_ms:.2f}ms")
+    else:
+        logger.info(f"[PERF_LOG - {timestamp}] [{service}] {message}")
 
 outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
 
@@ -163,6 +174,102 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=llm,
     )
+
+    # Performance tracking state
+    perf_state = {
+        "user_speech_start": None,
+        "user_speech_end": None,
+        "stt_commit_time": None,
+        "llm_start": None,
+        "llm_first_token": None,
+        "llm_complete": None,
+        "tts_start": None,
+        "turn_id": 0,
+    }
+
+    # VAD events - Voice Activity Detection
+    @session.on("user_started_speaking")
+    def on_user_started_speaking():
+        perf_state["turn_id"] += 1
+        perf_state["user_speech_start"] = time.time()
+        perf_log("VAD", f"[Turn {perf_state['turn_id']}] User started speaking")
+
+    @session.on("user_stopped_speaking")
+    def on_user_stopped_speaking():
+        perf_state["user_speech_end"] = time.time()
+        if perf_state["user_speech_start"]:
+            duration = (perf_state["user_speech_end"] - perf_state["user_speech_start"]) * 1000
+            perf_log("VAD", f"[Turn {perf_state['turn_id']}] User stopped speaking (speech duration)", duration)
+
+    # STT events - Speech to Text
+    @session.on("user_speech_committed")
+    def on_user_speech_committed(msg):
+        perf_state["stt_commit_time"] = time.time()
+        text_preview = msg.content[:80] if len(msg.content) > 80 else msg.content
+
+        # Time from speech end to STT commit (STT processing time)
+        if perf_state["user_speech_end"]:
+            stt_latency = (perf_state["stt_commit_time"] - perf_state["user_speech_end"]) * 1000
+            perf_log("STT", f"[Turn {perf_state['turn_id']}] Processing latency (speech end -> text ready)", stt_latency)
+
+        # Total time from speech start to STT commit
+        if perf_state["user_speech_start"]:
+            total_stt = (perf_state["stt_commit_time"] - perf_state["user_speech_start"]) * 1000
+            perf_log("STT", f"[Turn {perf_state['turn_id']}] Total STT time (speech start -> text ready)", total_stt)
+
+        perf_log("STT", f"[Turn {perf_state['turn_id']}] Transcribed: '{text_preview}'")
+        perf_state["llm_start"] = time.time()
+        perf_log("LLM", f"[Turn {perf_state['turn_id']}] Request sent to LLM")
+
+    # Agent/LLM events
+    @session.on("agent_started_speaking")
+    def on_agent_started_speaking():
+        now = time.time()
+
+        # LLM Time to First Token (includes TTS buffering)
+        if perf_state["llm_start"] and not perf_state["llm_first_token"]:
+            perf_state["llm_first_token"] = now
+            ttft = (now - perf_state["llm_start"]) * 1000
+            perf_log("LLM+TTS", f"[Turn {perf_state['turn_id']}] Time to first audio (LLM TTFT + TTS buffer)", ttft)
+
+        # End-to-end latency: user stops speaking -> agent starts speaking
+        if perf_state["user_speech_end"]:
+            e2e_latency = (now - perf_state["user_speech_end"]) * 1000
+            perf_log("E2E", f"[Turn {perf_state['turn_id']}] User stop -> Agent start (perceived latency)", e2e_latency)
+
+        perf_state["tts_start"] = now
+        perf_log("TTS", f"[Turn {perf_state['turn_id']}] Agent started speaking (audio playing)")
+
+    @session.on("agent_stopped_speaking")
+    def on_agent_stopped_speaking():
+        if perf_state["tts_start"]:
+            duration = (time.time() - perf_state["tts_start"]) * 1000
+            perf_log("TTS", f"[Turn {perf_state['turn_id']}] Agent stopped speaking (playback duration)", duration)
+
+    @session.on("agent_speech_committed")
+    def on_agent_speech_committed(msg):
+        now = time.time()
+        text_preview = msg.content[:80] if len(msg.content) > 80 else msg.content
+
+        # Full pipeline time
+        if perf_state["stt_commit_time"]:
+            pipeline_duration = (now - perf_state["stt_commit_time"]) * 1000
+            perf_log("PIPELINE", f"[Turn {perf_state['turn_id']}] LLM + TTS total (text ready -> speech done)", pipeline_duration)
+
+        # Total turn time
+        if perf_state["user_speech_start"]:
+            total_turn = (now - perf_state["user_speech_start"]) * 1000
+            perf_log("TOTAL", f"[Turn {perf_state['turn_id']}] Full turn (user start -> agent done)", total_turn)
+
+        perf_log("LLM", f"[Turn {perf_state['turn_id']}] Response: '{text_preview}'")
+
+        # Reset for next turn
+        perf_state["llm_first_token"] = None
+        perf_state["llm_start"] = None
+        perf_state["tts_start"] = None
+        perf_state["user_speech_start"] = None
+        perf_state["user_speech_end"] = None
+        perf_state["stt_commit_time"] = None
 
     # start the session first before dialing, to ensure that when the user picks up
     # the agent does not miss anything the user says
