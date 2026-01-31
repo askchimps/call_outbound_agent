@@ -90,6 +90,8 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
   --enable-prefix-caching \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.90 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
   --disable-log-requests
 
 # Wait for "Uvicorn running on http://0.0.0.0:8000" message
@@ -103,6 +105,8 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
 | `--enable-prefix-caching` | Cache system prompts (~80% cache hit rate) |
 | `--max-model-len 4096` | Limit context length (saves memory) |
 | `--gpu-memory-utilization 0.90` | Use 90% of GPU memory |
+| `--enable-auto-tool-choice` | Enable automatic tool/function calling |
+| `--tool-call-parser hermes` | Use Hermes format for tool calls (works with Qwen) |
 | `--disable-log-requests` | Reduce log noise |
 
 ### Step 1.8: Verify vLLM is Running
@@ -474,6 +478,8 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
   --enable-prefix-caching \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.90 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
   --disable-log-requests
 ```
 
@@ -591,13 +597,22 @@ ping <VAST_IP>
 ```bash
 # 1. Reduce max context length
 vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
-  --max-model-len 2048 \  # Reduce from 4096
-  --gpu-memory-utilization 0.85  # Reduce from 0.90
+  --host 0.0.0.0 \
+  --port 8000 \
+  --quantization awq \
+  --max-model-len 2048 \
+  --gpu-memory-utilization 0.85 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes
 
 # 2. Use smaller model
 vllm serve Qwen/Qwen2.5-3B-Instruct-AWQ \
+  --host 0.0.0.0 \
+  --port 8000 \
   --quantization awq \
-  --max-model-len 4096
+  --max-model-len 4096 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes
 ```
 
 ### Problem: TTS errors
