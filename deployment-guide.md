@@ -33,7 +33,7 @@ Before starting, ensure you have:
 3. Search for **vLLM** in the template search
 4. Select the vLLM template
 5. Filter by GPU:
-   - **RTX 3090 (24GB)** - Good for Qwen 7B (~$0.20/hr)
+   - **RTX 3090 (24GB)** - Good for xLAM 7B (~$0.20/hr)
    - **RTX 4090 (24GB)** - Faster (~$0.40/hr)
    - **RTX 5090 (32GB)** - Best performance (~$0.80/hr)
 6. Filter by region (for lowest latency to your EC2):
@@ -82,16 +82,16 @@ apt update && apt install -y tmux
 # Create a new tmux session
 tmux new -s vllm
 
-# Start vLLM with optimized flags
-vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+# Start vLLM with xLAM model (optimized for function calling)
+# xLAM-7b-fc-r: #3 on Berkeley Function Calling Leaderboard (88.24% accuracy)
+vllm serve Salesforce/xLAM-7b-fc-r \
   --host 0.0.0.0 \
   --port 8000 \
-  --quantization awq \
   --enable-prefix-caching \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.90 \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes \
+  --tool-call-parser xlam \
   --disable-log-requests
 
 # Wait for "Uvicorn running on http://0.0.0.0:8000" message
@@ -101,13 +101,19 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
 **vLLM Flags Explained:**
 | Flag | Purpose |
 |------|---------|
-| `--quantization awq` | Use 4-bit quantization (faster, less memory) |
+| `--enable-prefix-caching` | Cache common prefixes (faster repeated prompts) |
 | `--enable-prefix-caching` | Cache system prompts (~80% cache hit rate) |
 | `--max-model-len 4096` | Limit context length (saves memory) |
 | `--gpu-memory-utilization 0.90` | Use 90% of GPU memory |
 | `--enable-auto-tool-choice` | Enable automatic tool/function calling |
-| `--tool-call-parser hermes` | Use Hermes format for tool calls (works with Qwen) |
+| `--tool-call-parser xlam` | Use xLAM format for tool calls (optimized for Salesforce xLAM models) |
 | `--disable-log-requests` | Reduce log noise |
+
+**Model Options:**
+| Model | Size | BFCL Score | Best For |
+|-------|------|------------|----------|
+| `Salesforce/xLAM-7b-fc-r` | 7B | 88.24% (#3) | Best accuracy/speed balance |
+| `Salesforce/xLAM-1b-fc-r` | 1.35B | 78.94% | Ultra-low latency |
 
 ### Step 1.8: Verify vLLM is Running
 ```bash
@@ -115,7 +121,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
 curl http://localhost:8000/v1/models
 
 # Expected output:
-# {"object":"list","data":[{"id":"Qwen/Qwen2.5-7B-Instruct-AWQ",...}]}
+# {"object":"list","data":[{"id":"Salesforce/xLAM-7b-fc-r",...}]}
 ```
 
 ### Step 1.9: Test from Outside (Important!)
@@ -260,7 +266,7 @@ LLM_BASE_URL=
 
 # For self-hosted vLLM (from Part 1):
 OPENAI_API_KEY=not-needed
-LLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
+LLM_MODEL=Salesforce/xLAM-7b-fc-r
 LLM_BASE_URL=http://<VAST_PUBLIC_IP>:<PORT>/v1
 
 # === SIP Configuration ===
@@ -353,7 +359,7 @@ curl http://<EC2_PUBLIC_IP>:8000/health
 curl http://<VAST_PUBLIC_IP>:<PORT>/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+    "model": "Salesforce/xLAM-7b-fc-r",
     "messages": [{"role": "user", "content": "Hello, how are you?"}],
     "max_tokens": 50
   }'
@@ -471,15 +477,14 @@ watch -n 1 nvidia-smi
 # Restart vLLM
 tmux kill-session -t vllm
 tmux new -s vllm
-vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+vllm serve Salesforce/xLAM-7b-fc-r \
   --host 0.0.0.0 \
   --port 8000 \
-  --quantization awq \
   --enable-prefix-caching \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.90 \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes \
+  --tool-call-parser xlam \
   --disable-log-requests
 ```
 
@@ -541,7 +546,7 @@ cat .env.local | grep LLM
 # 3. Test LLM completion
 curl http://<VAST_IP>:<PORT>/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "Qwen/Qwen2.5-7B-Instruct-AWQ", "messages": [{"role": "user", "content": "Hi"}]}'
+  -d '{"model": "Salesforce/xLAM-7b-fc-r", "messages": [{"role": "user", "content": "Hi"}]}'
 
 # 4. On Vast.ai, check vLLM is running
 tmux attach -t vllm
@@ -580,7 +585,7 @@ docker-compose logs | grep PERF_LOG
 # 2. Test LLM latency
 time curl http://<VAST_IP>:<PORT>/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "Qwen/Qwen2.5-7B-Instruct-AWQ", "messages": [{"role": "user", "content": "Hi"}]}'
+  -d '{"model": "Salesforce/xLAM-7b-fc-r", "messages": [{"role": "user", "content": "Hi"}]}'
 
 # 3. Switch to Cartesia TTS (faster than ElevenLabs)
 # Edit .env.local: TTS_PROVIDER=cartesia
@@ -596,23 +601,21 @@ ping <VAST_IP>
 **Solutions:**
 ```bash
 # 1. Reduce max context length
-vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+vllm serve Salesforce/xLAM-7b-fc-r \
   --host 0.0.0.0 \
   --port 8000 \
-  --quantization awq \
   --max-model-len 2048 \
   --gpu-memory-utilization 0.85 \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes
+  --tool-call-parser xlam
 
-# 2. Use smaller model
-vllm serve Qwen/Qwen2.5-3B-Instruct-AWQ \
+# 2. Use smaller model (ultra-low latency)
+vllm serve Salesforce/xLAM-1b-fc-r \
   --host 0.0.0.0 \
   --port 8000 \
-  --quantization awq \
   --max-model-len 4096 \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes
+  --tool-call-parser xlam
 ```
 
 ### Problem: TTS errors
@@ -677,8 +680,8 @@ curl https://api.elevenlabs.io/v1/voices \
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │                         vLLM                                  │   │
 │  │  ┌────────────────────────────────────────────────────────┐  │   │
-│  │  │              Qwen/Qwen2.5-7B-Instruct-AWQ              │  │   │
-│  │  │                    (4-bit quantized)                    │  │   │
+│  │  │           Salesforce/xLAM-7b-fc-r                      │  │   │
+│  │  │         (optimized for function calling)               │  │   │
 │  │  └────────────────────────────────────────────────────────┘  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
@@ -879,26 +882,26 @@ On your Vast.ai instance:
 ```bash
 # If uploaded to HuggingFace
 tmux new -s vllm
-vllm serve your-username/qwen-finetuned-awq \
+vllm serve your-username/xlam-finetuned-awq \
   --host 0.0.0.0 \
   --port 8000 \
   --quantization awq \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes \
+  --tool-call-parser xlam \
   --max-model-len 8192
 
 # Or if using local path
-vllm serve /path/to/qwen-finetuned-awq \
+vllm serve /path/to/xlam-finetuned-awq \
   --host 0.0.0.0 \
   --port 8000 \
   --quantization awq \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes
+  --tool-call-parser xlam
 ```
 
 Update your `.env.local` on EC2:
 ```
-LLM_MODEL=your-username/qwen-finetuned-awq
+LLM_MODEL=your-username/xlam-finetuned-awq
 ```
 
 ### Fine-Tuning Summary

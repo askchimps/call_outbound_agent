@@ -124,11 +124,13 @@ async def entrypoint(ctx: JobContext):
     agent = OutboundCaller()
 
     # Configure LLM - supports custom vLLM endpoint via LLM_BASE_URL
+    # Recommended: Salesforce/xLAM-7b-fc-r for function calling (88.24% BFCL score, #3 globally)
+    # vLLM command: vllm serve Salesforce/xLAM-7b-fc-r --enable-auto-tool-choice --tool-call-parser xlam
     llm_base_url = os.getenv("LLM_BASE_URL")
     llm_model = os.getenv("LLM_MODEL", "gpt-4o")
 
     if llm_base_url:
-        # Custom LLM (e.g., vLLM on vast.ai)
+        # Custom LLM (e.g., xLAM on vLLM via vast.ai)
         llm = openai.LLM(
             model=llm_model,
             base_url=llm_base_url,
