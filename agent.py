@@ -24,10 +24,11 @@ from livekit.plugins import (
     openai,
     elevenlabs,
     cartesia,
+    sarvam,
     silero,
     noise_cancellation,  # noqa: F401
 )
-from livekit.plugins.turn_detector.english import EnglishModel
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 
 # load environment variables, this is optional, only used for local development
@@ -137,10 +138,32 @@ async def entrypoint(ctx: JobContext):
         # Default to OpenAI
         llm = openai.LLM(model=llm_model)
 
-    # Configure TTS - supports Cartesia or ElevenLabs via TTS_PROVIDER env var
+    # Configure STT - supports Deepgram or Sarvam via STT_PROVIDER env var
+    stt_provider = os.getenv("STT_PROVIDER", "deepgram").lower()
+
+    if stt_provider == "sarvam":
+        stt = sarvam.STT(
+            language=os.getenv("SARVAM_STT_LANGUAGE", "hi-IN"),
+            model=os.getenv("SARVAM_STT_MODEL", "saarika:v2.5"),
+        )
+        print(f"[INFO] Using Sarvam STT with language {os.getenv('SARVAM_STT_LANGUAGE', 'hi-IN')}", flush=True)
+    else:
+        stt = deepgram.STT(
+            language=os.getenv("DEEPGRAM_LANGUAGE", "en"),
+        )
+        print(f"[INFO] Using Deepgram STT with language {os.getenv('DEEPGRAM_LANGUAGE', 'en')}", flush=True)
+
+    # Configure TTS - supports Cartesia, ElevenLabs, or Sarvam via TTS_PROVIDER env var
     tts_provider = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
 
-    if tts_provider == "cartesia":
+    if tts_provider == "sarvam":
+        tts = sarvam.TTS(
+            target_language_code=os.getenv("SARVAM_TTS_LANGUAGE", "hi-IN"),
+            model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
+            speaker=os.getenv("SARVAM_TTS_SPEAKER", "anushka"),
+        )
+        print(f"[INFO] Using Sarvam TTS with speaker {os.getenv('SARVAM_TTS_SPEAKER', 'anushka')}", flush=True)
+    elif tts_provider == "cartesia":
         tts = cartesia.TTS(
             model=os.getenv("CARTESIA_MODEL", "sonic-2"),
             voice=os.getenv("CARTESIA_VOICE_ID", "a0e99841-438c-4a64-b679-ae501e7d6091"),
@@ -154,9 +177,9 @@ async def entrypoint(ctx: JobContext):
         print(f"[INFO] Using ElevenLabs TTS with voice {os.getenv('TTS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')}", flush=True)
 
     session = AgentSession(
-        turn_detection=EnglishModel(),
+        turn_detection=MultilingualModel(),
         vad=silero.VAD.load(),
-        stt=deepgram.STT(),
+        stt=stt,
         tts=tts,
         llm=llm,
     )

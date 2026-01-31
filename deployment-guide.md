@@ -3,6 +3,7 @@
 This guide provides step-by-step instructions to deploy:
 1. **vLLM Server** on Vast.ai (for LLM inference)
 2. **LiveKit Agent** on AWS EC2 (for voice calling)
+3. **Multiple Models** on a single GPU (LLM + TTS)
 
 ---
 
@@ -766,7 +767,194 @@ curl https://api.elevenlabs.io/v1/voices \
 
 ---
 
-## Part 7: Fine-Tuning Guide (For Later)
+## Part 7: Running Multiple Models on RTX 5090
+
+You can run both **Qwen 2.5 7B** (LLM) and **Kokoro TTS** (Text-to-Speech) on a single RTX 5090 GPU. Here's the VRAM breakdown and deployment instructions.
+
+### VRAM Requirements
+
+| Model | Parameters | Quantization | VRAM Usage |
+|-------|-----------|--------------|------------|
+| **Qwen 2.5 7B AWQ** | 7B | 4-bit AWQ | ~5-6GB (weights) + ~4-6GB (KV cache) ≈ **10-12GB** |
+| **Kokoro TTS** | 82M | FP32/ONNX | **< 1GB** |
+| **Total** | - | - | **~11-13GB** |
+| **RTX 5090 Available** | - | - | **32GB** |
+| **Headroom** | - | - | **~19GB free** |
+
+### Why This Works
+
+1. **Qwen 2.5 7B AWQ** uses 4-bit quantization, reducing memory from ~14GB (FP16) to ~5-6GB
+2. **Kokoro TTS** is tiny (82M params vs 7B) and uses < 1GB
+3. RTX 5090's 32GB VRAM provides ample headroom for both models
+
+### Step 7.1: Deploy vLLM with Qwen (as in Part 1)
+
+```bash
+# On Vast.ai RTX 5090 instance
+tmux new -s vllm
+
+vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --quantization awq \
+  --enable-prefix-caching \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.50 \
+  --enable-auto-tool-choice \
+  --tool-call-parser hermes \
+  --disable-log-requests
+
+# Note: gpu-memory-utilization is set to 0.50 (50%) to leave room for Kokoro
+# Detach: Ctrl+B, then D
+```
+
+### Step 7.2: Install Kokoro TTS
+
+```bash
+# In a new tmux session
+tmux new -s kokoro
+
+# Clone Kokoro FastAPI wrapper
+git clone https://github.com/remsky/Kokoro-FastAPI.git
+cd Kokoro-FastAPI
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Or use Docker
+docker build -t kokoro-tts .
+```
+
+### Step 7.3: Start Kokoro TTS Server
+
+**Option A: Direct Python**
+```bash
+# Start Kokoro on a different port
+python -m uvicorn main:app --host 0.0.0.0 --port 8001
+```
+
+**Option B: Docker (Recommended)**
+```bash
+docker run -d \
+  --name kokoro-tts \
+  --gpus all \
+  -p 8001:8000 \
+  kokoro-tts
+```
+
+### Step 7.4: Verify Both Services
+
+```bash
+# Check vLLM (Qwen)
+curl http://localhost:8000/v1/models
+
+# Check Kokoro TTS
+curl http://localhost:8001/health
+
+# Check GPU memory usage
+nvidia-smi
+```
+
+Expected `nvidia-smi` output:
+```
++-----------------------------------------------------------------------------+
+| NVIDIA-SMI 550.xx   Driver Version: 550.xx   CUDA Version: 12.x             |
+|-------------------------------+----------------------+----------------------+
+| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+|===============================+======================+======================|
+|   0  GeForce RTX 5090    Off  | 00000000:01:00.0 Off |                  N/A |
+| 40%   45C    P2    80W / 450W |  13000MiB / 32768MiB |     5%      Default  |
++-------------------------------+----------------------+----------------------+
+```
+
+### Step 7.5: Test Kokoro TTS
+
+```bash
+# Generate speech (OpenAI-compatible endpoint)
+curl -X POST http://localhost:8001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kokoro",
+    "input": "Hello, this is a test of Kokoro TTS.",
+    "voice": "af"
+  }' \
+  --output test.mp3
+
+# Play the audio
+mpv test.mp3  # or use any audio player
+```
+
+### Kokoro TTS Voices
+
+| Voice Code | Description |
+|------------|-------------|
+| `af` | American Female |
+| `am` | American Male |
+| `bf` | British Female |
+| `bm` | British Male |
+
+### Step 7.6: Integrate with LiveKit Agent
+
+To use Kokoro TTS with your LiveKit agent, you'll need to create a custom TTS plugin. The basic approach:
+
+1. **Create a custom TTS class** that calls Kokoro's OpenAI-compatible endpoint
+2. **Stream audio chunks** back to the LiveKit pipeline
+3. **Configure the agent** to use your custom TTS
+
+Example custom TTS wrapper (conceptual):
+```python
+# In your agent.py or a separate module
+import httpx
+from livekit.agents import tts
+
+class KokoroTTS(tts.TTS):
+    def __init__(self, base_url: str = "http://localhost:8001", voice: str = "af"):
+        self.base_url = base_url
+        self.voice = voice
+        self.client = httpx.AsyncClient()
+
+    async def synthesize(self, text: str) -> tts.SynthesizedAudio:
+        response = await self.client.post(
+            f"{self.base_url}/v1/audio/speech",
+            json={
+                "model": "kokoro",
+                "input": text,
+                "voice": self.voice,
+            }
+        )
+        # Return audio data in the expected format
+        return tts.SynthesizedAudio(data=response.content, sample_rate=24000)
+```
+
+**Note:** Full LiveKit TTS plugin implementation requires implementing the streaming interface. See [LiveKit Agents GitHub Issue #1724](https://github.com/livekit/agents/issues/1724) for community discussion on custom TTS integration.
+
+### Performance Comparison
+
+| TTS Option | Latency | Quality | Hindi Support | GPU Required |
+|------------|---------|---------|---------------|--------------|
+| **ElevenLabs** | 300-600ms | ⭐⭐⭐⭐⭐ | ✅ | No (API) |
+| **Cartesia** | ~100ms | ⭐⭐⭐⭐ | ❌ | No (API) |
+| **Sarvam AI** | ~150ms | ⭐⭐⭐⭐ | ✅ Native | No (API) |
+| **Kokoro (self-hosted)** | ~50-100ms | ⭐⭐⭐⭐ | ❌ | Yes (~1GB) |
+| **Orpheus TTS Hindi** | <200ms | ⭐⭐⭐⭐⭐ | ✅ Native | Yes (~6GB) |
+
+### When to Use Self-Hosted TTS
+
+**Use Kokoro if:**
+- You need lowest possible latency
+- You're doing high-volume calls (cost savings)
+- English-only is acceptable
+- You have GPU headroom
+
+**Keep using Sarvam AI if:**
+- You need Hindi support
+- You want plug-and-play integration
+- You don't want to manage TTS infrastructure
+
+---
+
+## Part 8: Fine-Tuning Guide (For Later)
 
 This section covers how to fine-tune the base model on your own data and deploy it.
 
