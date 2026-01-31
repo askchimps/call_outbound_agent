@@ -1,56 +1,141 @@
 # Deployment Guide
 
-## Part 1: Setup vLLM on Vast.ai
+This guide provides step-by-step instructions to deploy:
+1. **vLLM Server** on Vast.ai (for LLM inference)
+2. **LiveKit Agent** on AWS EC2 (for voice calling)
 
-### Step 1: Rent a GPU Instance
-1. Go to [vast.ai](https://vast.ai) and create an account
-2. Navigate to **Search** → **Templates**
-3. Search for **vLLM** template
-4. Select **RTX 3090 (24GB)** - sufficient for Qwen2.5-7B-Instruct-AWQ
-5. Look for instance in **India** region for lowest latency
-6. Click **Rent** and wait for the instance to start
+---
 
-### Step 2: Connect to the Instance
+## Prerequisites
+
+Before starting, ensure you have:
+- [ ] Vast.ai account with credits
+- [ ] AWS account with EC2 access
+- [ ] LiveKit Cloud account (https://cloud.livekit.io)
+- [ ] Deepgram API key (https://console.deepgram.com)
+- [ ] Cartesia API key (https://play.cartesia.ai) OR ElevenLabs API key
+- [ ] SIP trunk configured in LiveKit Cloud
+
+---
+
+## Part 1: Deploy vLLM on Vast.ai
+
+### Step 1.1: Create Vast.ai Account and Add Credits
 ```bash
-ssh -p <PORT> root@<VAST_AI_IP>
+# Go to https://vast.ai and sign up
+# Add credits via Settings → Billing (minimum $10 recommended)
 ```
 
-### Step 3: Stop the Default Model
-The instance comes with a pre-loaded model. Stop it first:
+### Step 1.2: Find and Rent a GPU Instance
+
+1. Go to https://vast.ai/console/create/
+2. Click **Templates** tab
+3. Search for **vLLM** in the template search
+4. Select the vLLM template
+5. Filter by GPU:
+   - **RTX 3090 (24GB)** - Good for Qwen 7B (~$0.20/hr)
+   - **RTX 4090 (24GB)** - Faster (~$0.40/hr)
+   - **RTX 5090 (32GB)** - Best performance (~$0.80/hr)
+6. Filter by region (for lowest latency to your EC2):
+   - Singapore/Hong Kong for Asia
+   - US East for Americas
+7. Click **RENT** on your chosen instance
+8. Wait 2-5 minutes for instance to start
+
+### Step 1.3: Get SSH Connection Details
+
+From Vast.ai dashboard, find your instance and note:
+- **SSH Host**: e.g., `ssh8.vast.ai`
+- **SSH Port**: e.g., `12345`
+- **Direct Port**: e.g., `8000` → mapped to `54321`
+
+The connection command is shown in the dashboard.
+
+### Step 1.4: Connect to Your Instance
 ```bash
-# Find and kill the running vLLM process
+# Copy the SSH command from Vast.ai dashboard
+ssh -p <PORT> root@<SSH_HOST>
+
+# Example:
+ssh -p 12345 root@ssh8.vast.ai
+```
+
+### Step 1.5: Stop Default Model (if running)
+```bash
+# Check if vLLM is already running
+ps aux | grep vllm
+
+# Kill any existing vLLM process
 pkill -f vllm
 
-# Or find the process manually
+# Verify it's stopped
 ps aux | grep vllm
-kill <PID>
 ```
 
-### Step 4: Install Process Manager (tmux)
-We'll use `tmux` to keep vLLM running in the background (similar to pm2 for Node.js):
+### Step 1.6: Install tmux (for persistent sessions)
 ```bash
 apt update && apt install -y tmux
 ```
 
-### Step 5: Deploy Qwen Model with tmux
+### Step 1.7: Start vLLM with Optimized Settings
 ```bash
-# Create a new tmux session named 'vllm'
+# Create a new tmux session
 tmux new -s vllm
 
-# Inside tmux, start vLLM
+# Start vLLM with optimized flags
 vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
   --host 0.0.0.0 \
   --port 8000 \
   --quantization awq \
-  --enable-auto-tool-choice \
-  --tool-call-parser hermes \
-  --max-model-len 8192 \
-  --gpu-memory-utilization 0.85
+  --enable-prefix-caching \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.90 \
+  --disable-log-requests
 
-# Detach from tmux: Press Ctrl+B, then D
+# Wait for "Uvicorn running on http://0.0.0.0:8000" message
+# Then detach: Press Ctrl+B, then D
 ```
 
-### Step 6: tmux Commands Reference
+**vLLM Flags Explained:**
+| Flag | Purpose |
+|------|---------|
+| `--quantization awq` | Use 4-bit quantization (faster, less memory) |
+| `--enable-prefix-caching` | Cache system prompts (~80% cache hit rate) |
+| `--max-model-len 4096` | Limit context length (saves memory) |
+| `--gpu-memory-utilization 0.90` | Use 90% of GPU memory |
+| `--disable-log-requests` | Reduce log noise |
+
+### Step 1.8: Verify vLLM is Running
+```bash
+# Test locally
+curl http://localhost:8000/v1/models
+
+# Expected output:
+# {"object":"list","data":[{"id":"Qwen/Qwen2.5-7B-Instruct-AWQ",...}]}
+```
+
+### Step 1.9: Test from Outside (Important!)
+```bash
+# From your local machine, test the public endpoint
+# Get the public URL from Vast.ai dashboard (Open Ports section)
+
+curl http://<VAST_PUBLIC_IP>:<MAPPED_PORT>/v1/models
+
+# Example:
+curl http://209.20.158.140:54321/v1/models
+```
+
+### Step 1.10: Note Your LLM Endpoint
+
+Save this URL - you'll need it for EC2 configuration:
+```
+LLM_BASE_URL=http://<VAST_PUBLIC_IP>:<MAPPED_PORT>/v1
+
+# Example:
+LLM_BASE_URL=http://209.20.158.140:54321/v1
+```
+
+### tmux Quick Reference
 ```bash
 # List all sessions
 tmux ls
@@ -58,207 +143,535 @@ tmux ls
 # Attach to vllm session (view logs)
 tmux attach -t vllm
 
-# Detach from session (keep running): Ctrl+B, then D
+# Detach (keep running): Ctrl+B, then D
 
-# Kill the session (stop vLLM)
+# Kill session (stop vLLM)
 tmux kill-session -t vllm
 
-# Scroll through logs: Ctrl+B, then [ (use arrow keys, q to exit)
-```
-
-### Step 7: Verify vLLM is Running
-```bash
-curl http://localhost:8000/v1/models
-```
-
-Expected response:
-```json
-{"data": [{"id": "Qwen/Qwen2.5-7B-Instruct-AWQ", ...}]}
-```
-
-### Step 8: Note Your Vast.ai Public IP
-Find your instance's public IP and port from the Vast.ai dashboard. You'll need this for `LLM_BASE_URL`.
-
-### Alternative: Using systemd (if available)
-Create a systemd service for auto-restart:
-```bash
-cat > /etc/systemd/system/vllm.service << 'EOF'
-[Unit]
-Description=vLLM Server
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python -m vllm.entrypoints.openai.api_server \
-  --model Qwen/Qwen2.5-7B-Instruct-AWQ \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --quantization awq \
-  --enable-auto-tool-choice \
-  --tool-call-parser hermes \
-  --max-model-len 8192
-Restart=always
-RestartSec=10
-
-[Service]
-StandardOutput=append:/var/log/vllm.log
-StandardError=append:/var/log/vllm.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start
-systemctl daemon-reload
-systemctl enable vllm
-systemctl start vllm
-
-# Check status
-systemctl status vllm
-
-# View logs
-tail -f /var/log/vllm.log
-journalctl -u vllm -f
+# Scroll logs: Ctrl+B, then [ (arrow keys to scroll, q to exit)
 ```
 
 ---
 
-## Part 2: Deploy Agent on AWS EC2
+## Part 2: Deploy LiveKit Agent on AWS EC2
 
-### Step 1: Launch EC2 Instance
-1. Go to AWS Console → EC2 → Launch Instance
-2. Choose **Ubuntu 22.04 LTS**
-3. Instance type: **t3.medium** or larger
-4. Configure security group:
-   - SSH (22) - Your IP
-   - HTTP (8000) - Anywhere (for API)
-5. Launch and download the key pair
+### Step 2.1: Launch EC2 Instance
 
-### Step 2: Connect to EC2
+1. Go to AWS Console → EC2 → **Launch Instance**
+2. Configure:
+   - **Name**: `livekit-agent`
+   - **AMI**: Ubuntu Server 22.04 LTS (64-bit x86)
+   - **Instance type**: `t3.medium` (2 vCPU, 4GB RAM) or larger
+   - **Key pair**: Create new or select existing
+   - **Network settings**:
+     - Allow SSH from your IP
+     - Allow HTTP (port 8000) from anywhere
+3. Click **Launch Instance**
+4. Wait for instance to be "Running"
+
+### Step 2.2: Configure Security Group
+
+Go to EC2 → Security Groups → Select your instance's security group → Edit inbound rules:
+
+| Type | Port | Source | Description |
+|------|------|--------|-------------|
+| SSH | 22 | My IP | SSH access |
+| Custom TCP | 8000 | 0.0.0.0/0 | API endpoint |
+
+### Step 2.3: Connect to EC2
 ```bash
+# Download your key pair (.pem file) if you haven't
+
+# Set correct permissions
 chmod 400 your-key.pem
+
+# Connect to EC2
 ssh -i your-key.pem ubuntu@<EC2_PUBLIC_IP>
+
+# Example:
+ssh -i livekit-agent.pem ubuntu@54.169.123.45
 ```
 
-### Step 3: Install Docker
+### Step 2.4: Install Docker and Docker Compose
 ```bash
-sudo apt update
-sudo apt install -y docker.io docker-compose
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install -y docker.io
+
+# Install Docker Compose
+sudo apt install -y docker-compose
+
+# Add ubuntu user to docker group
 sudo usermod -aG docker ubuntu
+
+# Apply group changes (or logout and login again)
 newgrp docker
+
+# Verify installation
+docker --version
+docker-compose --version
 ```
 
-### Step 4: Clone the Repository
+### Step 2.5: Clone Repository
 ```bash
+# Clone your repository
 git clone https://github.com/YOUR_USERNAME/outbound-caller-python.git
+
+# Navigate to project directory
 cd outbound-caller-python
+
+# List files to verify
+ls -la
 ```
 
-### Step 5: Configure Environment
+### Step 2.6: Create Environment File
 ```bash
+# Copy example file
 cp .env.example .env.local
+
+# Edit the file
 nano .env.local
 ```
 
-Set the following values:
-```
+### Step 2.7: Configure Environment Variables
+
+Fill in ALL values in `.env.local`:
+
+```bash
+# === LiveKit Configuration ===
 LIVEKIT_URL=wss://your-project.livekit.cloud
-LIVEKIT_API_KEY=your_api_key
-LIVEKIT_API_SECRET=your_api_secret
-DEEPGRAM_API_KEY=your_deepgram_key
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+
+# === Speech-to-Text (Deepgram) ===
+DEEPGRAM_API_KEY=your_deepgram_api_key
+
+# === LLM Configuration ===
+# For OpenAI:
+OPENAI_API_KEY=your_openai_key
+LLM_MODEL=gpt-4o-mini
+LLM_BASE_URL=
+
+# For self-hosted vLLM (from Part 1):
 OPENAI_API_KEY=not-needed
 LLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
-LLM_BASE_URL=http://<VAST_AI_IP>:<PORT>/v1
-SIP_OUTBOUND_TRUNK_ID=your_trunk_id
+LLM_BASE_URL=http://<VAST_PUBLIC_IP>:<PORT>/v1
+
+# === SIP Configuration ===
+SIP_OUTBOUND_TRUNK_ID=your_sip_trunk_id
+
+# === TTS Configuration ===
+# Choose provider: "cartesia" (faster) or "elevenlabs" (better quality)
+TTS_PROVIDER=cartesia
+
+# ElevenLabs settings (if TTS_PROVIDER=elevenlabs)
 ELEVEN_API_KEY=your_elevenlabs_key
 TTS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 TTS_MODEL_ID=eleven_flash_v2_5
+
+# Cartesia settings (if TTS_PROVIDER=cartesia)
+CARTESIA_API_KEY=your_cartesia_key
+CARTESIA_VOICE_ID=a0e99841-438c-4a64-b679-ae501e7d6091
+CARTESIA_MODEL=sonic-2
 ```
 
-### Step 6: Create baseprompt.txt
+Save and exit: `Ctrl+X`, then `Y`, then `Enter`
+
+### Step 2.8: Create Agent Prompt
 ```bash
+# Create/edit the base prompt file
 nano baseprompt.txt
 ```
-Paste your agent's system prompt.
 
-### Step 7: Build and Run
+Paste your agent's system prompt, then save and exit.
+
+### Step 2.9: Build and Start the Agent
 ```bash
+# Build and run in detached mode
 docker-compose up -d --build
+
+# This will:
+# 1. Build the Docker image
+# 2. Start the container
+# 3. Run in background
 ```
 
-### Step 8: Check Logs
+### Step 2.10: Verify Agent is Running
 ```bash
+# Check container status
+docker-compose ps
+
+# Expected output:
+# NAME                COMMAND             STATUS              PORTS
+# outbound-caller     "python agent.py"   Up                  0.0.0.0:8000->8000/tcp
+
+# Check logs
 docker-compose logs -f
+
+# Look for:
+# "registered worker"
+# "agent_name": "outbound-caller"
+# "region": "Singapore South East" (or your region)
+
+# Press Ctrl+C to exit logs
 ```
+
+### Step 2.11: Test Health Endpoint
+```bash
+# From EC2 (local test)
+curl http://localhost:8000/health
+
+# From your local machine (remote test)
+curl http://<EC2_PUBLIC_IP>:8000/health
+
+# Expected response:
+# {"status": "healthy"}
+```
+
+### TTS Provider Comparison
+
+| Provider | Latency | Quality | Best For |
+|----------|---------|---------|----------|
+| **Cartesia** | ~100ms | Good | Low latency, Asia regions |
+| **ElevenLabs** | ~300-600ms | Excellent | Best voice quality |
+
+**Recommendation:** Use Cartesia for lower latency, especially when deploying in Asia.
 
 ---
 
-## Part 3: Test the API
+## Part 3: Test the System
 
-### Health Check
+### Step 3.1: Test vLLM Endpoint
 ```bash
-curl http://<EC2_PUBLIC_IP>:8000/health
+# From your local machine, test the LLM
+curl http://<VAST_PUBLIC_IP>:<PORT>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+    "messages": [{"role": "user", "content": "Hello, how are you?"}],
+    "max_tokens": 50
+  }'
+
+# Expected: JSON response with "choices" containing the model's reply
 ```
 
-Expected response:
-```json
+### Step 3.2: Test Agent Health
+```bash
+# From your local machine
+curl http://<EC2_PUBLIC_IP>:8000/health
+
+# Expected response:
 {"status": "healthy"}
 ```
 
-### Make an Outbound Call
+### Step 3.3: Make a Test Call (via API)
 ```bash
 curl -X POST http://<EC2_PUBLIC_IP>:8000/dispatch \
   -H "Content-Type: application/json" \
   -d '{"phone_number": "+919876543210"}'
-```
 
-Expected response:
-```json
+# Expected response:
 {
-  "dispatch_id": "...",
-  "room_name": "call-...",
+  "dispatch_id": "AD_xxxxx",
+  "room_name": "call-xxxxx",
   "phone_number": "+919876543210",
   "status": "dispatched"
 }
 ```
 
----
-
-## Troubleshooting
-
-### vLLM Issues
-- **Out of memory**: Reduce `--max-model-len` or use smaller model
-- **Model not found**: Check Hugging Face access for gated models
-- **Check vLLM logs**: `tmux attach -t vllm` or `tail -f /var/log/vllm.log`
-
-### Agent Issues
-- **Connection refused**: Check security groups allow port 8000
-- **LLM timeout**: Verify Vast.ai instance is running and accessible
-
-### Check Container Status
+### Step 3.4: Make a Test Call (via LiveKit CLI)
 ```bash
-docker-compose ps
-docker-compose logs outbound-caller
+# Install lk CLI if not already installed
+# https://docs.livekit.io/home/cli/lk/
+
+# Configure CLI
+export LIVEKIT_URL=wss://your-project.livekit.cloud
+export LIVEKIT_API_KEY=your_api_key
+export LIVEKIT_API_SECRET=your_api_secret
+
+# Dispatch a call
+lk dispatch create \
+  --new-room \
+  --agent-name outbound-caller \
+  --metadata '{"phone_number": "+919876543210"}'
 ```
 
-### Useful Commands
+### Step 3.5: Monitor Call in Real-Time
 ```bash
+# On EC2, watch logs
+docker-compose logs -f
+
+# Look for:
+# - "registered worker" - Agent connected
+# - "participant joined" - SIP call connected
+# - "[PERF_LOG]" - Performance metrics
+```
+
+### Step 3.6: Check Active Rooms
+```bash
+# List all active rooms
+lk room list
+
+# List participants in a room
+lk room participants list <room-name>
+```
+
+---
+
+## Part 4: Common Operations
+
+### Docker Commands (on EC2)
+```bash
+# View running containers
+docker-compose ps
+
+# View logs (follow mode)
+docker-compose logs -f
+
+# View last 100 lines
+docker-compose logs --tail 100
+
 # Restart agent
 docker-compose restart
 
-# Rebuild and restart
-docker-compose up -d --build
-
-# Stop everything
+# Stop agent
 docker-compose down
 
-# View real-time logs
-docker-compose logs -f
+# Rebuild and restart (after code changes)
+docker-compose down && docker-compose up -d --build
+
+# Full rebuild (clear cache)
+docker-compose down --rmi all --volumes
+docker system prune -af --volumes
+docker-compose up -d --build
+```
+
+### vLLM Commands (on Vast.ai)
+```bash
+# Attach to vLLM session
+tmux attach -t vllm
+
+# Detach (keep running): Ctrl+B, then D
+
+# View vLLM processes
+ps aux | grep vllm
+
+# Check GPU usage
+nvidia-smi
+
+# Watch GPU in real-time
+watch -n 1 nvidia-smi
+
+# Restart vLLM
+tmux kill-session -t vllm
+tmux new -s vllm
+vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --quantization awq \
+  --enable-prefix-caching \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.90 \
+  --disable-log-requests
+```
+
+### LiveKit CLI Commands
+```bash
+# List rooms
+lk room list
+
+# Delete a room
+lk room delete <room-name>
+
+# List SIP trunks
+lk sip outbound list
+
+# Check agent status (for Cloud Agents)
+lk agent list
+lk agent status <agent-id>
+
+# Tail agent logs (for Cloud Agents)
+lk agent logs <agent-id>
 ```
 
 ---
 
-## Part 4: Fine-Tuning Guide (For Later)
+## Part 5: Troubleshooting
+
+### Problem: Agent not registering with LiveKit
+
+**Symptoms:** No "registered worker" message in logs
+
+**Solutions:**
+```bash
+# 1. Check environment variables
+docker-compose exec outbound-caller env | grep LIVEKIT
+
+# 2. Verify LiveKit credentials
+curl -X POST https://your-project.livekit.cloud/twirp/livekit.RoomService/ListRooms \
+  -H "Authorization: Bearer $(lk token create --api-key $LIVEKIT_API_KEY --api-secret $LIVEKIT_API_SECRET)"
+
+# 3. Check container logs
+docker-compose logs --tail 50
+
+# 4. Restart container
+docker-compose restart
+```
+
+### Problem: LLM not responding
+
+**Symptoms:** Calls connect but agent doesn't speak
+
+**Solutions:**
+```bash
+# 1. Test LLM endpoint directly
+curl http://<VAST_IP>:<PORT>/v1/models
+
+# 2. Check LLM_BASE_URL in .env.local
+cat .env.local | grep LLM
+
+# 3. Test LLM completion
+curl http://<VAST_IP>:<PORT>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "Qwen/Qwen2.5-7B-Instruct-AWQ", "messages": [{"role": "user", "content": "Hi"}]}'
+
+# 4. On Vast.ai, check vLLM is running
+tmux attach -t vllm
+# Look for errors, then Ctrl+B, D to detach
+```
+
+### Problem: SIP calls not connecting
+
+**Symptoms:** Dispatch created but phone doesn't ring
+
+**Solutions:**
+```bash
+# 1. Verify SIP trunk ID
+lk sip outbound list
+
+# 2. Check SIP_OUTBOUND_TRUNK_ID in .env.local
+cat .env.local | grep SIP
+
+# 3. Check if agent joined the room
+lk room list
+lk room participants list <room-name>
+
+# 4. Check agent logs for SIP errors
+docker-compose logs | grep -i sip
+```
+
+### Problem: High latency / slow responses
+
+**Symptoms:** Long pauses between user speech and agent response
+
+**Solutions:**
+```bash
+# 1. Check performance logs
+docker-compose logs | grep PERF_LOG
+
+# 2. Test LLM latency
+time curl http://<VAST_IP>:<PORT>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "Qwen/Qwen2.5-7B-Instruct-AWQ", "messages": [{"role": "user", "content": "Hi"}]}'
+
+# 3. Switch to Cartesia TTS (faster than ElevenLabs)
+# Edit .env.local: TTS_PROVIDER=cartesia
+
+# 4. Check network latency to vLLM
+ping <VAST_IP>
+```
+
+### Problem: vLLM out of memory
+
+**Symptoms:** CUDA out of memory error
+
+**Solutions:**
+```bash
+# 1. Reduce max context length
+vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+  --max-model-len 2048 \  # Reduce from 4096
+  --gpu-memory-utilization 0.85  # Reduce from 0.90
+
+# 2. Use smaller model
+vllm serve Qwen/Qwen2.5-3B-Instruct-AWQ \
+  --quantization awq \
+  --max-model-len 4096
+```
+
+### Problem: TTS errors
+
+**Symptoms:** Agent processes but no audio output
+
+**Solutions:**
+```bash
+# 1. Check TTS configuration
+cat .env.local | grep -E "TTS|CARTESIA|ELEVEN"
+
+# 2. Verify API keys are set
+# For Cartesia: CARTESIA_API_KEY
+# For ElevenLabs: ELEVEN_API_KEY
+
+# 3. Test API key validity
+# Cartesia:
+curl https://api.cartesia.ai/voices \
+  -H "X-API-Key: your_cartesia_key"
+
+# ElevenLabs:
+curl https://api.elevenlabs.io/v1/voices \
+  -H "xi-api-key: your_elevenlabs_key"
+```
+
+---
+
+## Part 6: Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        PHONE NETWORK                                 │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │ SIP
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     LIVEKIT CLOUD (Singapore)                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │  SIP Trunk   │  │    Room      │  │   Agent      │               │
+│  │              │──│   Server     │──│   Dispatch   │               │
+│  └──────────────┘  └──────────────┘  └──────────────┘               │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │ WebSocket
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        AWS EC2 (Agent)                               │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                     Docker Container                          │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │   │
+│  │  │   VAD    │─▶│   STT    │─▶│   LLM    │─▶│   TTS    │      │   │
+│  │  │ (Silero) │  │(Deepgram)│  │          │  │(Cartesia)│      │   │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │ HTTP/OpenAI API
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      VAST.AI (vLLM Server)                           │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                         vLLM                                  │   │
+│  │  ┌────────────────────────────────────────────────────────┐  │   │
+│  │  │              Qwen/Qwen2.5-7B-Instruct-AWQ              │  │   │
+│  │  │                    (4-bit quantized)                    │  │   │
+│  │  └────────────────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Part 7: Fine-Tuning Guide (For Later)
 
 This section covers how to fine-tune the base model on your own data and deploy it.
 

@@ -23,6 +23,7 @@ from livekit.plugins import (
     deepgram,
     openai,
     elevenlabs,
+    cartesia,
     silero,
     noise_cancellation,  # noqa: F401
 )
@@ -136,14 +137,27 @@ async def entrypoint(ctx: JobContext):
         # Default to OpenAI
         llm = openai.LLM(model=llm_model)
 
+    # Configure TTS - supports Cartesia or ElevenLabs via TTS_PROVIDER env var
+    tts_provider = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
+
+    if tts_provider == "cartesia":
+        tts = cartesia.TTS(
+            model=os.getenv("CARTESIA_MODEL", "sonic-2"),
+            voice=os.getenv("CARTESIA_VOICE_ID", "a0e99841-438c-4a64-b679-ae501e7d6091"),
+        )
+        print(f"[INFO] Using Cartesia TTS with model {os.getenv('CARTESIA_MODEL', 'sonic-2')}", flush=True)
+    else:
+        tts = elevenlabs.TTS(
+            voice_id=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+            model=os.getenv("TTS_MODEL_ID", "eleven_flash_v2_5"),
+        )
+        print(f"[INFO] Using ElevenLabs TTS with voice {os.getenv('TTS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')}", flush=True)
+
     session = AgentSession(
         turn_detection=EnglishModel(),
         vad=silero.VAD.load(),
         stt=deepgram.STT(),
-        tts=elevenlabs.TTS(
-            voice_id=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
-            model=os.getenv("TTS_MODEL_ID", "eleven_flash_v2_5"),
-        ),
+        tts=tts,
         llm=llm,
     )
 
