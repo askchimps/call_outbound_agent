@@ -334,6 +334,86 @@ curl http://<EC2_PUBLIC_IP>:8000/health
 # {"status": "healthy"}
 ```
 
+### Step 2.12: Setup Nginx Reverse Proxy (Optional)
+
+Set up nginx to access the LiveKit agent from outside via EC2 public IP.
+
+#### Install Nginx
+```bash
+sudo apt update
+sudo apt install -y nginx
+sudo systemctl start nginx
+sudo systemctl enable nginx
+```
+
+#### Configure Nginx
+```bash
+# Create nginx config
+sudo nano /etc/nginx/sites-available/livekit-agent
+```
+
+Paste the following configuration:
+```nginx
+server {
+    listen 80;
+    server_name _;  # Accept any hostname/IP
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+#### Enable the Site
+```bash
+# Create symlink to enable site
+sudo ln -s /etc/nginx/sites-available/livekit-agent /etc/nginx/sites-enabled/
+
+# Remove default site
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# Test nginx configuration
+sudo nginx -t
+
+# Reload nginx
+sudo systemctl reload nginx
+```
+
+#### Update EC2 Security Group
+Make sure your EC2 security group allows:
+- **Port 80** (HTTP) - for nginx access
+- **Port 22** (SSH) - for management
+
+#### Test Access
+```bash
+# From your local machine
+curl http://<EC2_PUBLIC_IP>/health
+
+# Expected response:
+# {"status": "healthy"}
+```
+
+#### Nginx Commands Reference
+```bash
+# Check status
+sudo systemctl status nginx
+
+# Reload config
+sudo systemctl reload nginx
+
+# View logs
+sudo tail -f /var/log/nginx/access.log
+sudo tail -f /var/log/nginx/error.log
+```
+
 ### TTS Provider Comparison
 
 | Provider | Latency | Quality | Best For |
